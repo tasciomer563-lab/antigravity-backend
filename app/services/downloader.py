@@ -210,6 +210,61 @@ def _try_instagram_embed_fallback(
     )
 
 
+def _download_file(url: str, dest: str, timeout: int = 120) -> None:
+    req = urllib.request.Request(url, headers={"User-Agent": MOBILE_USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as fh:
+        shutil.copyfileobj(r, fh)
+
+
+def _try_tiktok_tikwm(
+    url: str, temp_dir: str, unique_id: str, mode: MediaMode
+) -> Optional[DownloadedMedia]:
+    """TikTok için ücretsiz tikwm.com genel API'si (filigransız MP4 / MP3 / kapak)."""
+    try:
+        api = "https://www.tikwm.com/api/?hd=1&url=" + urllib.parse.quote(url, safe="")
+        req = urllib.request.Request(api, headers={"User-Agent": MOBILE_USER_AGENT})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        data = payload.get("data") or {}
+        if payload.get("code") != 0 or not data:
+            return None
+        title = (data.get("title") or f"tiktok_{data.get('id', unique_id)}").strip()[:80]
+
+        if mode == "thumbnail":
+            src = data.get("origin_cover") or data.get("cover")
+            if not src:
+                return None
+            raw_path = os.path.join(temp_dir, f"raw_{unique_id}")
+            _download_file(src, raw_path, 30)
+            jpg_path = os.path.join(temp_dir, f"cover_{unique_id}.jpg")
+            with Image.open(raw_path) as img:
+                img.convert("RGB").save(jpg_path, format="JPEG", quality=95)
+            os.remove(raw_path)
+            return DownloadedMedia(jpg_path, title, temp_dir, "image/jpeg", "jpg")
+
+        if mode == "audio":
+            src = data.get("music")
+            if not src:
+                return None
+            out = os.path.join(temp_dir, f"media_{unique_id}.mp3")
+            _download_file(src, out)
+            if os.path.getsize(out) == 0:
+                return None
+            return DownloadedMedia(out, title, temp_dir, "audio/mpeg", "mp3")
+
+        src = data.get("hdplay") or data.get("play")
+        if not src:
+            return None
+        out = os.path.join(temp_dir, f"media_{unique_id}.mp4")
+        _download_file(src, out)
+        if os.path.getsize(out) == 0:
+            return None
+        return DownloadedMedia(out, title, temp_dir, "video/mp4", "mp4")
+    except Exception as exc:
+        print(f"[TikTok tikwm] Uyarı: {exc}")
+        return None
+
+
 def _try_cobalt_fallback(
     url: str, temp_dir: str, unique_id: str, mode: MediaMode
 ) -> Optional[DownloadedMedia]:
@@ -330,6 +385,12 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
     proxy = os.getenv("PROXY_URL", "").strip()
     if proxy:
         ydl_opts["proxy"] = proxy
+
+    is_tiktok = "tiktok.com" in url.lower()
+    if is_tiktok:
+        tk = _try_tiktok_tikwm(url, temp_dir, unique_id, mode)
+        if tk is not None and os.path.exists(tk.file_path):
+            return tk
 
     is_youtube = "youtube.com" in url.lower() or "youtu.be" in url.lower()
     is_instagram = "instagram.com" in url.lower() or "instagr.am" in url.lower()

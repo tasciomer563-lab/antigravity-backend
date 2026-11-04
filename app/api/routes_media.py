@@ -40,6 +40,8 @@ def _detect_platform(url: str) -> str:
         return "youtube"
     if "instagram.com" in host or "instagr.am" in host:
         return "instagram"
+    if "tiktok.com" in host:
+        return "tiktok"
     return "other"
 
 
