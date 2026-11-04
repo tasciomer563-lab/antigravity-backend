@@ -67,24 +67,23 @@ def _log_media_to_supabase_sync(
 
 
 def _friendly_download_error(exc: Exception) -> str:
-    """yt-dlp'nin teknik hata metnini kullanıcıya anlaşılır Türkçe mesaja çevirir."""
+    """yt-dlp'nin teknik hata metnini anlaşılır Türkçe mesaja çevirir; teknik nedeni de ekler."""
     raw = str(exc)
     low = raw.lower()
+    short = raw.replace("ERROR: ", "").strip()[:220]
     if "sign in to confirm" in low or "not a bot" in low:
-        return (
-            "YouTube sunucu IP'sini bot sanıp engelledi. Birkaç dakika sonra tekrar dene "
-            "veya sunucuya YT_COOKIES ortam değişkeni ekle."
-        )
-    if "login required" in low or "rate-limit" in low or "rate limit" in low:
-        return "Instagram bu videoya giriş istiyor veya istekleri sınırladı. Biraz sonra tekrar dene; hesap gizliyse indirilemez."
-    if "private" in low:
-        return "Bu video gizli (private); indirilemez."
-    if "unavailable" in low or "not available" in low:
-        return "Bu video kullanılamıyor veya kaldırılmış."
-    if "unsupported url" in low:
-        return "Desteklenmeyen bağlantı. Lütfen YouTube veya Instagram linki gir."
-    short = raw.replace("ERROR: ", "").strip()
-    return f"Medya indirilemedi: {short[:300]}"
+        hint = "YouTube sunucu IP'sini bot sanıp engelledi. Sunucuya YT_COOKIES (çerez) eklemek gerekir."
+    elif "empty media response" in low or "login required" in low or "rate-limit" in low or "rate limit" in low:
+        hint = "Instagram sunucu IP'sini engelledi veya giriş istiyor. Sunucuya YT_COOKIES (çerez) eklemek gerekir."
+    elif "private" in low:
+        hint = "Bu video gizli (private); indirilemez."
+    elif "video unavailable" in low or "has been removed" in low:
+        hint = "Bu video kullanılamıyor veya kaldırılmış."
+    elif "unsupported url" in low:
+        hint = "Desteklenmeyen bağlantı. Lütfen YouTube veya Instagram linki gir."
+    else:
+        hint = "Medya indirilemedi."
+    return f"{hint} (Teknik: {short})"
 
 
 def _cleanup_temp_dir(temp_dir: str) -> None:
