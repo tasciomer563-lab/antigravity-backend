@@ -18,6 +18,9 @@ from PIL import Image
 
 MediaMode = Literal["video", "audio", "thumbnail"]
 
+# Yedek çözücülerin son hata notu (kullanıcıya teknik neden göstermek için)
+FALLBACK_NOTES: list[str] = []
+
 MOBILE_USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
@@ -227,6 +230,7 @@ def _try_tiktok_tikwm(
             payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
         data = payload.get("data") or {}
         if payload.get("code") != 0 or not data:
+            FALLBACK_NOTES.append(f"tikwm yanıtı: {str(payload)[:150]}")
             print(f"[TikTok tikwm] Yanıt başarısız: {str(payload)[:200]}")
             return None
         title = (data.get("title") or f"tiktok_{data.get('id', unique_id)}").strip()[:80]
@@ -262,6 +266,7 @@ def _try_tiktok_tikwm(
             return None
         return DownloadedMedia(out, title, temp_dir, "video/mp4", "mp4")
     except Exception as exc:
+        FALLBACK_NOTES.append(f"tikwm hatası: {exc}")
         print(f"[TikTok tikwm] Uyarı: {exc}")
         return None
 
@@ -318,6 +323,7 @@ def _try_cobalt_fallback(
 
 def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> DownloadedMedia:
     """yt-dlp'yi senkron olarak çalıştırır; Instagram rate-limit durumunda yedek çözücüyü devreye sokar."""
+    FALLBACK_NOTES.clear()
     temp_dir = tempfile.mkdtemp(prefix="antigravity_media_")
     unique_id = uuid.uuid4().hex[:8]
     output_template = os.path.join(temp_dir, f"media_{unique_id}.%(ext)s")
@@ -446,6 +452,8 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
         if cobalt_res is not None and os.path.exists(cobalt_res.file_path):
             return cobalt_res
         shutil.rmtree(temp_dir, ignore_errors=True)
+        if FALLBACK_NOTES:
+            raise RuntimeError(f"{last_exc} | " + " ; ".join(FALLBACK_NOTES))
         raise last_exc
 
     resolved_path = ""
