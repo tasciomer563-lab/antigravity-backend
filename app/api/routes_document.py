@@ -14,6 +14,39 @@ from PIL import Image, ImageOps
 
 from app.core.config import STORAGE_BUCKET, get_supabase_client
 
+# iPhone fotoğrafları (HEIC/HEIF) için isteğe bağlı destek
+try:  # pragma: no cover
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+    _HEIF_OK = True
+except Exception:  # pillow-heif kurulu değilse sessizce devam et
+    _HEIF_OK = False
+
+IMAGE_EXTS = ("jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif", "gif", "heic", "heif")
+
+_PDF_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+]
+
+
+def _register_pdf_unicode_font() -> Optional[str]:
+    """Türkçe karakterleri koruyan bir TTF font bulup ReportLab'e kaydeder."""
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        for path in _PDF_FONT_CANDIDATES:
+            if os.path.exists(path):
+                pdfmetrics.registerFont(TTFont("UnicodeSans", path))
+                return "UnicodeSans"
+    except Exception as exc:
+        print(f"[PDF] Unicode font yüklenemedi: {exc}")
+    return None
+
 router = APIRouter()
 
 TargetFormat = Literal["pdf", "docx", "xlsx", "pptx", "txt"]
@@ -94,7 +127,7 @@ def _parse_input_files(
         ext = os.path.splitext(filename.lower())[1].lstrip(".")
 
         # 1. Görsel Dosyaları (JPG, PNG, WEBP, HEIC vb.)
-        if ext in ("jpg", "jpeg", "png", "webp", "bmp", "tiff"):
+        if ext in IMAGE_EXTS:
             img = Image.open(io.BytesIO(raw_bytes))
             img = ImageOps.exif_transpose(img).convert("RGB")
             if img.width > max_width:
@@ -296,8 +329,17 @@ def _build_target_bytes(
             img_stream = io.BytesIO()
             img.save(img_stream, format="JPEG", quality=clamped_quality, optimize=True)
             img_stream.seek(0)
+            # 10x7.5 inç slayta sığdır (geniş görseller taşmasın)
+            max_w, max_h = 9.0, 6.5
+            ratio = img.width / img.height if img.height else 1
+            pic_w = min(max_w, max_h * ratio)
+            pic_h = pic_w / ratio
             slide.shapes.add_picture(
-                img_stream, Inches(0.5), Inches(0.5), height=Inches(6.5)
+                img_stream,
+                Inches((10 - pic_w) / 2),
+                Inches((7.5 - pic_h) / 2),
+                width=Inches(pic_w),
+                height=Inches(pic_h),
             )
 
         # Metin paragraflarını 6'şar satırlık slaytlar halinde ekle
@@ -354,24 +396,28 @@ def _build_target_bytes(
     width, height = A4
     y_pos = height - 50
 
-    c.setFont("Helvetica", 11)
+    pdf_font = _register_pdf_unicode_font()
+    font_name = pdf_font or "Helvetica"
+    c.setFont(font_name, 11)
     lines_to_write = parsed.paragraphs or [" | ".join(r) for r in parsed.rows]
 
     for paragraph in lines_to_write:
         # ReportLab standart Helvetica'da olmayan Türkçe karakterleri okunaklı eşdeğerleriyle koru
-        safe_line = (
-            paragraph.replace("ğ", "g")
-            .replace("Ğ", "G")
-            .replace("ş", "s")
-            .replace("Ş", "S")
-            .replace("ı", "i")
-            .replace("İ", "I")
-        )
-        wrapped = simpleSplit(safe_line, "Helvetica", 11, width - 80)
+        safe_line = paragraph
+        if not pdf_font:
+            safe_line = (
+                paragraph.replace("ğ", "g")
+                .replace("Ğ", "G")
+                .replace("ş", "s")
+                .replace("Ş", "S")
+                .replace("ı", "i")
+                .replace("İ", "I")
+            )
+        wrapped = simpleSplit(safe_line, font_name, 11, width - 80)
         for w_line in wrapped:
             if y_pos < 50:
                 c.showPage()
-                c.setFont("Helvetica", 11)
+                c.setFont(font_name, 11)
                 y_pos = height - 50
             c.drawString(40, y_pos, w_line)
             y_pos -= 16

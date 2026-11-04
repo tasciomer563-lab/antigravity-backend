@@ -4,8 +4,11 @@ import json
 import os
 import re
 import subprocess
+import shutil
 import tempfile
+import urllib.parse
 import urllib.request
+import mimetypes
 import uuid
 from dataclasses import dataclass
 from typing import Literal, Optional
@@ -19,6 +22,20 @@ MOBILE_USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
 )
+
+
+def _cookie_file() -> Optional[str]:
+    """YouTube bot engeli için isteğe bağlı çerez (Render env: YT_COOKIES = Netscape cookies.txt içeriği)."""
+    raw = os.getenv("YT_COOKIES", "").strip()
+    if not raw:
+        return None
+    try:
+        fd, path = tempfile.mkstemp(prefix="yt_cookies_", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(raw.replace("\\n", "\n"))
+        return path
+    except OSError:
+        return None
 
 
 @dataclass
@@ -238,7 +255,12 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
 
     else:
         ydl_opts = {
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            # 1080p ile sınırla: Render'da zaman aşımı ve devasa dosyaları önler
+            "format": (
+                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
+                "/best[height<=1080][ext=mp4]/bestvideo[height<=1080]+bestaudio"
+                "/best[height<=1080]/best"
+            ),
             "merge_output_format": "mp4",
             "outtmpl": output_template,
             "noplaylist": True,
@@ -249,6 +271,12 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
         }
         target_ext = "mp4"
         mime_type = "video/mp4"
+
+    ydl_opts["retries"] = 3
+    ydl_opts["socket_timeout"] = 30
+    cookie_path = _cookie_file()
+    if cookie_path:
+        ydl_opts["cookiefile"] = cookie_path
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -262,13 +290,20 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
             )
             if fallback_res is not None and os.path.exists(fallback_res.file_path):
                 return fallback_res
+        shutil.rmtree(temp_dir, ignore_errors=True)
         raise ytdlp_exc
+    finally:
+        if cookie_path and os.path.exists(cookie_path):
+            try:
+                os.remove(cookie_path)
+            except OSError:
+                pass
 
     resolved_path = ""
     if mode == "thumbnail":
         for fname in os.listdir(temp_dir):
             full_p = os.path.join(temp_dir, fname)
-            if os.path.isfile(full_p):
+            if os.path.isfile(full_p) and not fname.startswith("cover_"):
                 jpg_path = os.path.join(temp_dir, f"cover_{unique_id}.jpg")
                 with Image.open(full_p) as img:
                     img.convert("RGB").save(jpg_path, format="JPEG", quality=95)
@@ -280,9 +315,20 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
                 resolved_path = os.path.join(temp_dir, fname)
                 break
         if not resolved_path:
-            files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir)]
+            files = [
+                os.path.join(temp_dir, f)
+                for f in os.listdir(temp_dir)
+                if os.path.isfile(os.path.join(temp_dir, f))
+            ]
             if files:
-                resolved_path = files[0]
+                resolved_path = max(files, key=os.path.getsize)
+                # Dosya mp4/mp3 değilse gerçek uzantı ve MIME'ı bildir (yanlış etiketlemeyi önler)
+                real_ext = os.path.splitext(resolved_path)[1].lstrip(".").lower()
+                if real_ext:
+                    target_ext = real_ext
+                    mime_type = (
+                        mimetypes.guess_type(resolved_path)[0] or mime_type
+                    )
 
     return DownloadedMedia(
         file_path=resolved_path,

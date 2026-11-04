@@ -66,6 +66,27 @@ def _log_media_to_supabase_sync(
         print(f"[Supabase] media_history kayıt hatası: {exc}")
 
 
+def _friendly_download_error(exc: Exception) -> str:
+    """yt-dlp'nin teknik hata metnini kullanıcıya anlaşılır Türkçe mesaja çevirir."""
+    raw = str(exc)
+    low = raw.lower()
+    if "sign in to confirm" in low or "not a bot" in low:
+        return (
+            "YouTube sunucu IP'sini bot sanıp engelledi. Birkaç dakika sonra tekrar dene "
+            "veya sunucuya YT_COOKIES ortam değişkeni ekle."
+        )
+    if "login required" in low or "rate-limit" in low or "rate limit" in low:
+        return "Instagram bu videoya giriş istiyor veya istekleri sınırladı. Biraz sonra tekrar dene; hesap gizliyse indirilemez."
+    if "private" in low:
+        return "Bu video gizli (private); indirilemez."
+    if "unavailable" in low or "not available" in low:
+        return "Bu video kullanılamıyor veya kaldırılmış."
+    if "unsupported url" in low:
+        return "Desteklenmeyen bağlantı. Lütfen YouTube veya Instagram linki gir."
+    short = raw.replace("ERROR: ", "").strip()
+    return f"Medya indirilemedi: {short[:300]}"
+
+
 def _cleanup_temp_dir(temp_dir: str) -> None:
     """Yanıt istemciye ulaştıktan sonra sunucudaki geçici medya klasörünü temizler."""
     if os.path.exists(temp_dir):
@@ -125,7 +146,7 @@ async def download_media(
     except Exception as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"Medya indirilemedi: {exc}",
+            detail=_friendly_download_error(exc),
         ) from exc
 
     if not result.file_path or not os.path.exists(result.file_path):

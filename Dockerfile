@@ -3,7 +3,7 @@ FROM python:3.10-slim
 
 # Sistem paketlerini güncelle ve ffmpeg kur (yt-dlp video+ses birleştirmesi için zorunlu)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
 
 # Çalışma dizinini ayarla
