@@ -72,7 +72,7 @@ def _friendly_download_error(exc: Exception) -> str:
     """yt-dlp'nin teknik hata metnini anlaşılır Türkçe mesaja çevirir; teknik nedeni de ekler."""
     raw = str(exc)
     low = raw.lower()
-    short = raw.replace("ERROR: ", "").strip()[:220]
+    short = raw.replace("ERROR: ", "").strip()[-450:]
     if "sign in to confirm" in low or "not a bot" in low:
         hint = "YouTube sunucu IP'sini bot sanıp engelledi. Sunucuya YT_COOKIES (çerez) eklemek gerekir."
     elif "empty media response" in low or "login required" in low or "rate-limit" in low or "rate limit" in low:

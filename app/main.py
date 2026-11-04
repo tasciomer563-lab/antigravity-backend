@@ -27,4 +27,4 @@ app.include_router(audio_router, prefix="/api/audio", tags=["Whisper Audio Assis
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "build": "2026-11-04-tiktok-notes"}
+    return {"status": "ok", "build": "2026-11-04-tiktok-notes2"}
