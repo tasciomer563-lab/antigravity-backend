@@ -16,6 +16,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Flutter Web'in (tarayıcının) Supabase linkini okuyabilmesi için özel başlıkları açığa çıkar
+    expose_headers=["X-Supabase-Url", "X-File-Size-Mb", "Content-Disposition"],
 )
 
 app.include_router(document_router, prefix="/api/document", tags=["Document Hub"])
