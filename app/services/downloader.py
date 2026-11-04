@@ -210,6 +210,56 @@ def _try_instagram_embed_fallback(
     )
 
 
+def _try_cobalt_fallback(
+    url: str, temp_dir: str, unique_id: str, mode: MediaMode
+) -> Optional[DownloadedMedia]:
+    """COBALT_API_URL (ve varsa COBALT_API_KEY) tanımlıysa Cobalt API üzerinden indirir."""
+    api = os.getenv("COBALT_API_URL", "").strip()
+    if not api or mode == "thumbnail":
+        return None
+    try:
+        payload = json.dumps(
+            {
+                "url": url,
+                "videoQuality": "1080",
+                "downloadMode": "audio" if mode == "audio" else "auto",
+                "audioFormat": "mp3",
+                "filenameStyle": "basic",
+            }
+        ).encode("utf-8")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": MOBILE_USER_AGENT,
+        }
+        key = os.getenv("COBALT_API_KEY", "").strip()
+        if key:
+            headers["Authorization"] = f"Api-Key {key}"
+        req = urllib.request.Request(api, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        if data.get("status") not in ("tunnel", "redirect") or not data.get("url"):
+            return None
+
+        ext = "mp3" if mode == "audio" else "mp4"
+        out_path = os.path.join(temp_dir, f"media_{unique_id}.{ext}")
+        dl_req = urllib.request.Request(data["url"], headers={"User-Agent": MOBILE_USER_AGENT})
+        with urllib.request.urlopen(dl_req, timeout=120) as r, open(out_path, "wb") as fh:
+            shutil.copyfileobj(r, fh)
+        if os.path.getsize(out_path) == 0:
+            return None
+        return DownloadedMedia(
+            file_path=out_path,
+            title=data.get("filename") or f"medya_{unique_id}",
+            temp_dir=temp_dir,
+            media_type="audio/mpeg" if mode == "audio" else "video/mp4",
+            extension=ext,
+        )
+    except Exception as exc:
+        print(f"[Cobalt Fallback] Uyarı: {exc}")
+        return None
+
+
 def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> DownloadedMedia:
     """yt-dlp'yi senkron olarak çalıştırır; Instagram rate-limit durumunda yedek çözücüyü devreye sokar."""
     temp_dir = tempfile.mkdtemp(prefix="antigravity_media_")
@@ -277,27 +327,64 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
     cookie_path = _cookie_file()
     if cookie_path:
         ydl_opts["cookiefile"] = cookie_path
+    proxy = os.getenv("PROXY_URL", "").strip()
+    if proxy:
+        ydl_opts["proxy"] = proxy
 
+    is_youtube = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+    is_instagram = "instagram.com" in url.lower() or "instagr.am" in url.lower()
+
+    # YouTube bot engelinde farklı istemci kimlikleriyle sırayla dene (çoğu çerezsiz geçer)
+    attempts: list[Optional[list[str]]] = [None]
+    if is_youtube:
+        attempts += [["android_vr"], ["tv"], ["mweb"], ["ios"], ["web_embedded"]]
+
+    title = ""
+    last_exc: Optional[Exception] = None
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get("title") or f"medya_{unique_id}"
-    except Exception as ytdlp_exc:
-        # Eğer link Instagram ise yedek GraphQL/Embed indiriciyi dene
-        if "instagram.com" in url.lower() or "instagr.am" in url.lower():
-            fallback_res = _try_instagram_embed_fallback(
-                url, temp_dir, unique_id, mode
-            )
-            if fallback_res is not None and os.path.exists(fallback_res.file_path):
-                return fallback_res
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise ytdlp_exc
+        for clients in attempts:
+            opts = dict(ydl_opts)
+            if clients:
+                opts["extractor_args"] = {"youtube": {"player_client": clients}}
+            # önceki denemeden kalan yarım dosyaları temizle
+            for leftover in os.listdir(temp_dir):
+                try:
+                    os.remove(os.path.join(temp_dir, leftover))
+                except OSError:
+                    pass
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    title = info.get("title") or f"medya_{unique_id}"
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                low = str(exc).lower()
+                # Sadece bot/giriş engelinde diğer istemcileri dene; diğer hatalarda hemen çık
+                if not ("sign in" in low or "bot" in low or "unavailable" in low or "format" in low):
+                    break
     finally:
         if cookie_path and os.path.exists(cookie_path):
             try:
                 os.remove(cookie_path)
             except OSError:
                 pass
+
+    if last_exc is not None:
+        # Yedek 1: Instagram embed/GraphQL
+        if is_instagram:
+            fallback_res = _try_instagram_embed_fallback(
+                url, temp_dir, unique_id, mode
+            )
+            if fallback_res is not None and os.path.exists(fallback_res.file_path):
+                return fallback_res
+        # Yedek 2: isteğe bağlı Cobalt API (COBALT_API_URL)
+        cobalt_res = _try_cobalt_fallback(url, temp_dir, unique_id, mode)
+        if cobalt_res is not None and os.path.exists(cobalt_res.file_path):
+            return cobalt_res
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise last_exc
 
     resolved_path = ""
     if mode == "thumbnail":
