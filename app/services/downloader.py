@@ -227,6 +227,7 @@ def _try_tiktok_tikwm(
             payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
         data = payload.get("data") or {}
         if payload.get("code") != 0 or not data:
+            print(f"[TikTok tikwm] Yanıt başarısız: {str(payload)[:200]}")
             return None
         title = (data.get("title") or f"tiktok_{data.get('id', unique_id)}").strip()[:80]
 
