@@ -389,6 +389,9 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
     cookie_path = _cookie_file()
     if cookie_path:
         ydl_opts["cookiefile"] = cookie_path
+    elif os.getenv("COOKIES_FROM_BROWSER", "").strip():
+        # Yerel kullanim: tarayicidaki oturumu kullan (ornek: firefox, edge, chrome)
+        ydl_opts["cookiesfrombrowser"] = (os.getenv("COOKIES_FROM_BROWSER").strip().lower(),)
     proxy = os.getenv("PROXY_URL", "").strip()
     if proxy:
         ydl_opts["proxy"] = proxy
