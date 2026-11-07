@@ -1,4 +1,6 @@
+import os
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes_document import router as document_router
 from app.api.routes_media import router as media_router
@@ -28,3 +30,9 @@ app.include_router(audio_router, prefix="/api/audio", tags=["Whisper Audio Assis
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "build": "2026-11-04-tiktok-notes2"}
+
+
+# Yerel kullanim: WEB_DIR (Flutter web build klasoru) verilirse arayuz da bu sunucudan sunulur
+_web_dir = os.getenv("WEB_DIR", "").strip() or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+if _web_dir and os.path.isdir(_web_dir):
+    app.mount("/", StaticFiles(directory=_web_dir, html=True), name="web")
