@@ -36,8 +36,7 @@ async def health_check():
         "status": "ok",
         "build": "2026-11-08-deno-diag",
         "yt_cookies_set": bool(raw_cookies.strip()),
-        "yt_cookies_lines": len([ln for ln in raw_cookies.replace("\n", "
-").splitlines() if ln.strip()]),
+        "yt_cookies_lines": len(raw_cookies.replace(chr(92) + "n", chr(10)).splitlines()),
         "yt_cookies_has_header": raw_cookies.lstrip().startswith("# Netscape") or raw_cookies.lstrip().startswith("# HTTP"),
         "deno": bool(shutil.which("deno")),
         "node": bool(shutil.which("node")),
