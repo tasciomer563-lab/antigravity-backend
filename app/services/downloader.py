@@ -386,6 +386,9 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
 
     ydl_opts["retries"] = 3
     ydl_opts["socket_timeout"] = 30
+    # YouTube 'n challenge' icin JS calisma ortami: deno yoksa node'u kullan
+    if not shutil.which("deno") and shutil.which("node"):
+        ydl_opts["js_runtimes"] = {"node": {}}
     cookie_path = _cookie_file()
     if cookie_path:
         ydl_opts["cookiefile"] = cookie_path

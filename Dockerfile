@@ -1,10 +1,13 @@
 # Hafif ve hızlı bir Python 3.10 tabanı
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 # Sistem paketlerini güncelle ve ffmpeg kur (yt-dlp video+ses birleştirmesi için zorunlu)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
+
+# Deno: yt-dlp'nin YouTube 'n challenge' (JS) cozumu icin gerekli; varsayilan olarak otomatik kullanilir
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
 # Çalışma dizinini ayarla
 WORKDIR /app
