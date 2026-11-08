@@ -6,7 +6,8 @@ supabase==2.4.5
 groq==0.4.2
 pytube==15.0.0
 moviepy==1.0.3
-yt-dlp[default]>=2024.10.22
+yt-dlp>=2024.10.22
+yt-dlp-ejs>=0.3.0
 python-dotenv==1.0.1
 aiofiles==23.2.1
 Pillow==10.4.0

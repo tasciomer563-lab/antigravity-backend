@@ -1,5 +1,5 @@
 # Hafif ve hızlı bir Python 3.10 tabanı
-FROM python:3.12-slim
+FROM python:3.10-slim
 
 # Sistem paketlerini güncelle ve ffmpeg kur (yt-dlp video+ses birleştirmesi için zorunlu)
 RUN apt-get update && \
