@@ -29,7 +29,20 @@ app.include_router(audio_router, prefix="/api/audio", tags=["Whisper Audio Assis
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "build": "2026-11-04-tiktok-notes2"}
+    import shutil
+
+    raw_cookies = os.getenv("YT_COOKIES", "")
+    return {
+        "status": "ok",
+        "build": "2026-11-08-deno-diag",
+        "yt_cookies_set": bool(raw_cookies.strip()),
+        "yt_cookies_lines": len([ln for ln in raw_cookies.replace("\n", "
+").splitlines() if ln.strip()]),
+        "yt_cookies_has_header": raw_cookies.lstrip().startswith("# Netscape") or raw_cookies.lstrip().startswith("# HTTP"),
+        "deno": bool(shutil.which("deno")),
+        "node": bool(shutil.which("node")),
+        "ffmpeg": bool(shutil.which("ffmpeg")),
+    }
 
 
 # Yerel kullanim: WEB_DIR (Flutter web build klasoru) verilirse arayuz da bu sunucudan sunulur
