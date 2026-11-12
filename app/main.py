@@ -8,8 +8,8 @@ from app.api.routes_audio import router as audio_router
 
 app = FastAPI(
     title="Öğrenci & Üretkenlik Asistanı API",
-    description="VisionKit PDF/Word, yt-dlp Medya/MP3/Kapak ve Whisper AI Sesli Ders/Toplantı Servisi",
-    version="2.0.0",
+    description="VisionKit PDF/Word, yt-dlp Medya/MP3/Kapak, FFmpeg Video Küçültücü ve Whisper AI Sesli Ders/Toplantı Servisi",
+    version="2.5.0",
 )
 
 app.add_middleware(
@@ -18,8 +18,15 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # Flutter Web'in (tarayıcının) Supabase linkini okuyabilmesi için özel başlıkları açığa çıkar
-    expose_headers=["X-Supabase-Url", "X-File-Size-Mb", "Content-Disposition", "Content-Length"],
+    expose_headers=[
+        "X-Supabase-Url",
+        "X-File-Size-Mb",
+        "Content-Disposition",
+        "Content-Length",
+        "X-Original-Size-Bytes",
+        "X-Compressed-Size-Bytes",
+        "X-Video-Title",
+    ],
 )
 
 app.include_router(document_router, prefix="/api/document", tags=["Document Hub"])
@@ -34,7 +41,8 @@ async def health_check():
     raw_cookies = os.getenv("YT_COOKIES", "")
     return {
         "status": "ok",
-        "build": "2026-11-08-deno-diag",
+        "version": "2.5.0",
+        "build": "2026-11-12-student-super-suite",
         "yt_cookies_set": bool(raw_cookies.strip()),
         "yt_cookies_lines": len(raw_cookies.replace(chr(92) + "n", chr(10)).splitlines()),
         "yt_cookies_has_header": raw_cookies.lstrip().startswith("# Netscape") or raw_cookies.lstrip().startswith("# HTTP"),

@@ -1,17 +1,17 @@
 import asyncio
 import html as html_lib
 import json
+import mimetypes
 import os
 import re
-import subprocess
 import shutil
+import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
-import mimetypes
 import uuid
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import yt_dlp
 from PIL import Image
@@ -85,7 +85,6 @@ def _try_instagram_embed_fallback(
         with urllib.request.urlopen(req, timeout=15) as resp:
             page_html = resp.read().decode("utf-8", errors="ignore")
 
-        # Gömülü JSON içinden video_url ara
         v_match = re.search(r'"video_url"\s*:\s*"([^"]+)"', page_html)
         if v_match:
             video_url = (
@@ -231,7 +230,6 @@ def _try_tiktok_tikwm(
         data = payload.get("data") or {}
         if payload.get("code") != 0 or not data:
             FALLBACK_NOTES.append(f"tikwm yanıtı: {str(payload)[:150]}")
-            print(f"[TikTok tikwm] Yanıt başarısız: {str(payload)[:200]}")
             return None
         title = (data.get("title") or f"tiktok_{data.get('id', unique_id)}").strip()[:80]
 
@@ -267,7 +265,6 @@ def _try_tiktok_tikwm(
         return DownloadedMedia(out, title, temp_dir, "video/mp4", "mp4")
     except Exception as exc:
         FALLBACK_NOTES.append(f"tikwm hatası: {exc}")
-        print(f"[TikTok tikwm] Uyarı: {exc}")
         return None
 
 
@@ -367,7 +364,6 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
 
     else:
         ydl_opts = {
-            # 1080p ile sınırla: Render'da zaman aşımı ve devasa dosyaları önler
             "format": (
                 "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
                 "/best[height<=1080][ext=mp4]/bestvideo[height<=1080]+bestaudio"
@@ -386,14 +382,12 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
 
     ydl_opts["retries"] = 3
     ydl_opts["socket_timeout"] = 30
-    # YouTube 'n challenge' icin JS calisma ortami: deno yoksa node'u kullan
     if not shutil.which("deno") and shutil.which("node"):
         ydl_opts["js_runtimes"] = {"node": {}}
     cookie_path = _cookie_file()
     if cookie_path:
         ydl_opts["cookiefile"] = cookie_path
     elif os.getenv("COOKIES_FROM_BROWSER", "").strip():
-        # Yerel kullanim: tarayicidaki oturumu kullan (ornek: firefox, edge, chrome)
         ydl_opts["cookiesfrombrowser"] = (os.getenv("COOKIES_FROM_BROWSER").strip().lower(),)
     proxy = os.getenv("PROXY_URL", "").strip()
     if proxy:
@@ -408,7 +402,6 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
     is_youtube = "youtube.com" in url.lower() or "youtu.be" in url.lower()
     is_instagram = "instagram.com" in url.lower() or "instagr.am" in url.lower()
 
-    # YouTube bot engelinde farklı istemci kimlikleriyle sırayla dene (çoğu çerezsiz geçer)
     attempts: list[Optional[list[str]]] = [None]
     if is_youtube:
         attempts += [["android_vr"], ["tv"], ["mweb"], ["ios"], ["web_embedded"]]
@@ -420,7 +413,6 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
             opts = dict(ydl_opts)
             if clients:
                 opts["extractor_args"] = {"youtube": {"player_client": clients}}
-            # önceki denemeden kalan yarım dosyaları temizle
             for leftover in os.listdir(temp_dir):
                 try:
                     os.remove(os.path.join(temp_dir, leftover))
@@ -435,7 +427,6 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
             except Exception as exc:
                 last_exc = exc
                 low = str(exc).lower()
-                # Sadece bot/giriş engelinde diğer istemcileri dene; diğer hatalarda hemen çık
                 if not ("sign in" in low or "bot" in low or "unavailable" in low or "format" in low):
                     break
     finally:
@@ -446,14 +437,12 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
                 pass
 
     if last_exc is not None:
-        # Yedek 1: Instagram embed/GraphQL
         if is_instagram:
             fallback_res = _try_instagram_embed_fallback(
                 url, temp_dir, unique_id, mode
             )
             if fallback_res is not None and os.path.exists(fallback_res.file_path):
                 return fallback_res
-        # Yedek 2: isteğe bağlı Cobalt API (COBALT_API_URL)
         cobalt_res = _try_cobalt_fallback(url, temp_dir, unique_id, mode)
         if cobalt_res is not None and os.path.exists(cobalt_res.file_path):
             return cobalt_res
@@ -485,7 +474,6 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
             ]
             if files:
                 resolved_path = max(files, key=os.path.getsize)
-                # Dosya mp4/mp3 değilse gerçek uzantı ve MIME'ı bildir (yanlış etiketlemeyi önler)
                 real_ext = os.path.splitext(resolved_path)[1].lstrip(".").lower()
                 if real_ext:
                     target_ext = real_ext
@@ -502,6 +490,90 @@ def _extract_and_download_sync(url: str, mode: MediaMode = "video") -> Downloade
     )
 
 
+def _fetch_media_info_sync(url: str) -> dict[str, Any]:
+    """İndirme başlatmadan önce video başlığı, kapak fotoğrafı, süre ve kanal bilgisini getirir."""
+    low_url = url.lower()
+
+    # 1. TikTok hızlı bilgi (tikwm API)
+    if "tiktok.com" in low_url:
+        try:
+            api = "https://www.tikwm.com/api/?hd=1&url=" + urllib.parse.quote(url, safe="")
+            req = urllib.request.Request(api, headers={"User-Agent": MOBILE_USER_AGENT})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            data = payload.get("data") or {}
+            if payload.get("code") == 0 and data:
+                author = data.get("author") or {}
+                return {
+                    "title": data.get("title") or "TikTok Videosu",
+                    "uploader": author.get("nickname") or author.get("unique_id") or "TikTok",
+                    "duration_seconds": int(data.get("duration") or 0),
+                    "thumbnail_url": data.get("origin_cover") or data.get("cover"),
+                    "platform": "tiktok",
+                    "url": url,
+                }
+        except Exception:
+            pass
+
+    # 2. YouTube hızlı oEmbed önizlemesi (yt-dlp yedekli)
+    if "youtube.com" in low_url or "youtu.be" in low_url:
+        try:
+            oembed_url = "https://www.youtube.com/oembed?format=json&url=" + urllib.parse.quote(
+                url, safe=""
+            )
+            req = urllib.request.Request(
+                oembed_url, headers={"User-Agent": MOBILE_USER_AGENT}
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                oe = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            if oe.get("title"):
+                return {
+                    "title": oe.get("title"),
+                    "uploader": oe.get("author_name") or "YouTube",
+                    "duration_seconds": 0,
+                    "thumbnail_url": oe.get("thumbnail_url"),
+                    "platform": "youtube",
+                    "url": url,
+                }
+        except Exception:
+            pass
+
+    # 3. Genel yt-dlp skip_download bilgi çekimi
+    ydl_opts = {
+        "skip_download": True,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 15,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return {
+                "title": info.get("title") or "Medya Bağlantısı",
+                "uploader": info.get("uploader") or info.get("channel") or "",
+                "duration_seconds": int(info.get("duration") or 0),
+                "thumbnail_url": info.get("thumbnail"),
+                "platform": (info.get("extractor_key") or "media").lower(),
+                "url": url,
+            }
+    except Exception:
+        shortcode = _extract_instagram_shortcode(url)
+        return {
+            "title": f"Instagram Reels ({shortcode})" if shortcode else "Medya Bağlantısı Hazır",
+            "uploader": "Sosyal Medya",
+            "duration_seconds": 0,
+            "thumbnail_url": None,
+            "platform": "instagram" if shortcode else "other",
+            "url": url,
+        }
+
+
 async def download_media_async(url: str, mode: MediaMode = "video") -> DownloadedMedia:
     """FastAPI ana event loop'unu bloke etmeden medya indirme işlemini yürütür."""
     return await asyncio.to_thread(_extract_and_download_sync, url, mode)
+
+
+async def fetch_media_info_async(url: str) -> dict[str, Any]:
+    """FastAPI event loop'unu bloke etmeden medya meta verisini getirir."""
+    return await asyncio.to_thread(_fetch_media_info_sync, url)

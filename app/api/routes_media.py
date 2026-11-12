@@ -1,24 +1,28 @@
 import asyncio
+import json
 import os
 import re
 import shutil
-from typing import Literal, Optional
+import subprocess
+import tempfile
+import uuid
+from typing import Any, Literal, Optional
 from urllib.parse import quote, urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from app.core.config import get_supabase_client
-from app.services.downloader import download_media_async
+from app.core.local_store import add_history_entry, get_history_entries
+from app.services.downloader import download_media_async, fetch_media_info_async
 
 router = APIRouter()
 
 
 class MediaDownloadRequest(BaseModel):
-    # HttpUrl yerine esnek str kullanarak mobil paylaşım metinlerini veya query parametrelerini de kabul eder
-    url: Optional[str] = Field(default=None, description="İndirilecek YouTube veya Instagram URL'si")
+    url: Optional[str] = Field(default=None, description="İndirilecek YouTube, Instagram veya TikTok URL'si")
     video_url: Optional[str] = Field(default=None, description="Alternatif URL alanı")
     mode: Literal["video", "audio", "thumbnail"] = "video"
 
@@ -42,6 +46,8 @@ def _detect_platform(url: str) -> str:
         return "instagram"
     if "tiktok.com" in host:
         return "tiktok"
+    if "twitter.com" in host or "x.com" in host:
+        return "twitter"
     return "other"
 
 
@@ -50,7 +56,18 @@ def _log_media_to_supabase_sync(
     title: str,
     media_mode: str,
 ) -> None:
-    """Başarıyla indirilen medyayı Supabase media_history tablosuna kaydeder."""
+    """Başarıyla indirilen medyayı hem yerel geçmişe hem de Supabase media_history tablosuna kaydeder."""
+    platform = _detect_platform(source_url)
+    add_history_entry(
+        "media_history",
+        {
+            "source_url": source_url,
+            "title": title,
+            "media_mode": media_mode,
+            "platform": platform,
+        },
+    )
+
     supabase = get_supabase_client()
     if supabase is None:
         return
@@ -61,7 +78,7 @@ def _log_media_to_supabase_sync(
                 "source_url": source_url,
                 "title": title,
                 "media_mode": media_mode,
-                "platform": _detect_platform(source_url),
+                "platform": platform,
             }
         ).execute()
     except Exception as exc:
@@ -82,7 +99,7 @@ def _friendly_download_error(exc: Exception) -> str:
     elif "video unavailable" in low or "has been removed" in low:
         hint = "Bu video kullanılamıyor veya kaldırılmış."
     elif "unsupported url" in low:
-        hint = "Desteklenmeyen bağlantı. Lütfen YouTube veya Instagram linki gir."
+        hint = "Desteklenmeyen bağlantı. Lütfen geçerli bir video linki gir."
     else:
         hint = "Medya indirilemedi."
     return f"{hint} (Teknik: {short})"
@@ -92,6 +109,31 @@ def _cleanup_temp_dir(temp_dir: str) -> None:
     """Yanıt istemciye ulaştıktan sonra sunucudaki geçici medya klasörünü temizler."""
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@router.post("/info")
+async def get_media_info(
+    request: Request,
+    url_query: Optional[str] = Query(default=None, alias="url"),
+):
+    """Verilen URL için indirme öncesi başlık, kapak fotoğrafı, süre ve platform bilgisini döner."""
+    raw_url: Optional[str] = url_query
+    try:
+        raw_bytes = await request.body()
+        if raw_bytes:
+            body = json.loads(raw_bytes.decode("utf-8", errors="ignore"))
+            if isinstance(body, dict):
+                raw_url = raw_url or body.get("url") or body.get("video_url")
+    except Exception:
+        pass
+
+    if not raw_url or not str(raw_url).strip():
+        raise HTTPException(status_code=400, detail="Lütfen geçerli bir 'url' gönderin.")
+
+    clean_url = _extract_clean_url(str(raw_url))
+    info = await fetch_media_info_async(clean_url)
+    info["detected_platform"] = _detect_platform(clean_url)
+    return info
 
 
 @router.post("/download")
@@ -119,11 +161,8 @@ async def download_media(
             raw_url = raw_url or str(form.get("url") or form.get("video_url") or "")
             raw_mode = str(form.get("mode") or raw_mode)
         else:
-            # Content-Type belirtilmemişse yine de JSON parse dene
             raw_bytes = await request.body()
             if raw_bytes:
-                import json
-
                 body = json.loads(raw_bytes.decode("utf-8", errors="ignore"))
                 if isinstance(body, dict):
                     raw_url = raw_url or body.get("url") or body.get("video_url")
@@ -172,7 +211,136 @@ async def download_media(
         media_type=result.media_type,
         filename=final_filename,
         headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            "X-Video-Title": quote(result.title[:100]),
         },
         background=BackgroundTask(_cleanup_temp_dir, result.temp_dir),
     )
+
+
+def _compress_video_ffmpeg_sync(
+    input_path: str, output_path: str, quality: str
+) -> None:
+    """FFmpeg ile videoyu seçilen kalite seviyesinde (low/medium/high) küçültür."""
+    q = quality.lower().strip()
+    if q == "low":
+        crf = "30"
+        max_h = 480
+        audio_br = "96k"
+    elif q == "high":
+        crf = "21"
+        max_h = 1080
+        audio_br = "160k"
+    else:
+        crf = "26"
+        max_h = 720
+        audio_br = "128k"
+
+    vf_scale = (
+        f"scale='if(gt(ih,{max_h}),trunc(iw*{max_h}/ih/2)*2,trunc(iw/2)*2)'"
+        f":'if(gt(ih,{max_h}),{max_h},trunc(ih/2)*2)'"
+    )
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        input_path,
+        "-vf",
+        vf_scale,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        crf,
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        audio_br,
+        "-movflags",
+        "+faststart",
+        output_path,
+    ]
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=240,
+    )
+    if proc.returncode != 0 or not os.path.exists(output_path):
+        err_msg = proc.stderr.decode("utf-8", errors="ignore")[-300:]
+        raise RuntimeError(f"FFmpeg video küçültme hatası: {err_msg}")
+
+
+@router.post("/compress")
+async def compress_video_endpoint(
+    file: UploadFile = File(...),
+    quality: str = Form("medium"),
+):
+    """
+    Web ve Mobil için Bulut / Yerel FFmpeg Video Küçültücü:
+    Yüklenen videoyu H.264/AAC ile sıkıştırır ve MP4 olarak döner.
+    """
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Boş video dosyası gönderildi.")
+
+    original_size = len(raw_bytes)
+    temp_dir = tempfile.mkdtemp(prefix="antigravity_vcomp_")
+    uid = uuid.uuid4().hex[:8]
+    orig_ext = os.path.splitext(file.filename or "video.mp4")[1].lower() or ".mp4"
+    in_path = os.path.join(temp_dir, f"in_{uid}{orig_ext}")
+    out_path = os.path.join(temp_dir, f"compressed_{uid}.mp4")
+
+    with open(in_path, "wb") as fh:
+        fh.write(raw_bytes)
+
+    try:
+        await asyncio.to_thread(_compress_video_ffmpeg_sync, in_path, out_path, quality)
+    except Exception as exc:
+        _cleanup_temp_dir(temp_dir)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    compressed_size = os.path.getsize(out_path)
+    base_name = os.path.splitext(file.filename or "Video")[0]
+    safe_out_name = f"{base_name}_Kucultulmus.mp4"
+    encoded_name = quote(safe_out_name)
+
+    return FileResponse(
+        path=out_path,
+        media_type="video/mp4",
+        filename=safe_out_name,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
+            "X-Original-Size-Bytes": str(original_size),
+            "X-Compressed-Size-Bytes": str(compressed_size),
+        },
+        background=BackgroundTask(_cleanup_temp_dir, temp_dir),
+    )
+
+
+@router.get("/history")
+async def get_media_history():
+    """İndirilen medya geçmişini döner."""
+    items: list[dict[str, Any]] = []
+    supabase = get_supabase_client()
+    if supabase is not None:
+        try:
+            resp = (
+                supabase.table("media_history")
+                .select("*")
+                .order("created_at", desc=True)
+                .limit(30)
+                .execute()
+            )
+            if resp.data:
+                items.extend(resp.data)
+        except Exception:
+            pass
+
+    local_items = await asyncio.to_thread(get_history_entries, "media_history")
+    items.extend(local_items)
+    return {"items": items[:40]}

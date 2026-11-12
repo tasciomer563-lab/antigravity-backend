@@ -1,3 +1,6 @@
 .ffmpeg_bin/
+.local_data/
 .venv/
-web/
+__pycache__/
+*.pyc
+.env
